@@ -1,0 +1,213 @@
+---
+title: "session1"
+author: "jolynecujoh233"
+output: pdf_document
+date: "2026-03-03"
+---
+
+---
+Setup chunk
+设置代码块全局选项
+---
+
+```{r setup, include=FALSE}
+# knitr 是 RMarkdown 用来渲染文档的工具
+# opts_chunk$set() 用来设置所有代码块的默认行为
+# echo = TRUE 表示在生成的 PDF 中显示代码
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# theme_set() 用于设置之后所有 ggplot 图的默认主题
+# theme_minimal() 是一个简洁风格的主题
+theme_set(theme_minimal())
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r palette}
+# Custom colours 创建一个命名颜色向量
+# 方便后续画图统一使用
+
+pal <- c(
+  nus_blue     = "#003D7C",
+  blue         = "#2E75B6",
+  nus_orange   = "#EF7C00",
+  ice          = "#D6E8F7",
+  grey         = "#6B7D8C"
+)
+```
+
+```{r}
+# list.files() 用于列出文件夹中的文件
+# full.names = TRUE 表示返回完整路径
+# read_csv() 读取 CSV 文件
+# 这里会读取文件夹中所有文件（如果有多个会合并）
+resident_row <- read_csv(list.files('D:/Data', full.names = TRUE))
+```
+
+```{r}
+View(resident_row)
+```
+
+```{r}
+glimpse(resident_row)
+
+```
+
+```{r}
+resident_row %>%
+  count(Time) %>%
+  arrange(Time)%>% # 按年份排序
+  print(n=30)
+```
+
+```{r rename}
+residents <- resident_row %>%
+  rename(
+    planning_area = PA,
+    subzone       = SZ,
+    age_group     = AG,
+    sex           = Sex,
+    dwelling_type = TOD,
+    residents     = Pop,
+    year          = Time
+  )
+
+glimpse(residents)
+```
+
+```{r}
+# 计算不同 subzone 的数量
+n_distinct(residents$subzone)
+```
+
+```{r}
+# 统计不同住宅类型数量
+residents %>% 
+  count(dwelling_type)
+```
+
+---
+按规划区汇总人口
+Aggregate population by planning area
+---
+
+```{r}
+residents %>% 
+  group_by(planning_area) %>% 
+  summarise(total_resident=sum(residents)) %>% 
+  mutate(  #add 列
+  size_category = case_when(
+    total_resident >= 400000 ~ "Large",
+    total_resident >= 200000 ~ "Medium",
+    total_resident >= 100000 ~ "Small",
+    total_resident >= 0 ~ "Very small",
+    TRUE ~ "Unpopulated"
+  ))
+```
+
+---
+简化住宅类型
+Simplify dwelling categories
+---
+
+```{r simplify-dwelling}
+residents <- residents %>%
+  mutate(
+    dwelling_broad = case_when(
+       # str_detect() 用于检测字符串是否包含某个模式
+      str_detect(dwelling_type, "HDB 1")           ~ "HDB Small (1–2 Room)",
+      str_detect(dwelling_type, "HDB 3")           ~ "HDB 3-Room",
+      str_detect(dwelling_type, "HDB 4")           ~ "HDB 4-Room",
+      str_detect(dwelling_type, "HDB 5|Executive") ~ "HDB Large (5-Room+)",
+      str_detect(dwelling_type, "Condominium")      ~ "Condo / Apartment",
+      str_detect(dwelling_type, "Landed")           ~ "Landed",
+      TRUE                                          ~ "Other / HUDC"
+    )
+  )
+
+# 查看分类是否成功
+residents %>%
+  count(dwelling_broad, dwelling_type) %>%
+  arrange(dwelling_broad)
+```
+
+---
+宽格式转换
+Convert to wide format
+---
+
+```{r wide-dwelling}
+dwelling_wide <- residents %>%
+  filter(year == 2025) %>%
+  group_by(planning_area, dwelling_broad) %>%
+  summarise(total = sum(residents, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = dwelling_broad,
+    values_from = total,
+    values_fill = 0
+  )
+
+dwelling_wide %>% head(5)
+```
+
+```{r}
+residents %>% 
+  group_by(year) %>% 
+  summarise(total = sum(residents)) -> sg_annual
+
+sg_annual
+```
+
+```{r}
+ggplot(data = sg_annual,aes(x=year,y=total)) +
+  geom_line(linewidth = 1.2, colour = pal['nus_blue']) + # 使用自定义颜色
+  geom_point(colour = pal['nus_orange']) +
+  scale_y_continuous(labels = scales::comma, limits = c(0,NA)) +
+  labs(
+    title = "Singapore pop 2020-2025",
+    caption = "Data:Singapore Dept of Statistics",
+    y = "residents",
+    x = "year"
+  )
+```
+
+---
+关注特定规划区
+Focus on selected planning areas
+---
+
+```{r}
+# 设定关注区域
+focus_areas <- c("Punggol", "Sengkang", "Bedok", "Tampines", "Toa Payoh", "Queenstown")
+
+residents %>% 
+  group_by(year, planning_area) %>% 
+  summarise(total = sum(residents)) -> annual_by_pa
+
+annual_by_pa
+```
+
+```{r}
+# 按年份和规划区汇总人口
+annual_by_pa <- residents %>%
+  group_by(year, planning_area) %>%
+  summarise(total = sum(residents, na.rm = TRUE),
+            .groups = "drop")
+
+# 查看汇总结果（可选）
+annual_by_pa
+
+# 绘制折线图
+annual_by_pa %>%
+  filter(planning_area %in% focus_areas) %>%
+  ggplot(aes(x = year, y = total, colour = planning_area)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 1.2) +
+  scale_y_continuous(labels = scales::comma, limits = c(0,NA)) +
+  scale_color_brewer(palette = 'Dark2')
+
+```
