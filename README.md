@@ -13,3 +13,5 @@ Use summary statistics and simple visualizations to understand data distribution
 Apply statistical methods (e.g., regression or grouped summaries) to examine relationships.   
 The overall workflow is:
 Import → Clean → Explore → Analyze
+
+## 02
