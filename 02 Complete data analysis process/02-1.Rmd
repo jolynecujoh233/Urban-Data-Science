@@ -1,0 +1,406 @@
+---
+title: "session2"
+author: "jolynecujoh233"
+date: "2026-03-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+# 设置R Markdown代码块的全局参数  Set global options for R Markdown code chunks
+knitr::opts_chunk$set(echo = TRUE, # 显示代码 / show code in output
+                      warning = FALSE, # 不显示警告 / suppress warnings
+                      message = FALSE, # 不显示package提示 / suppress messages
+                      fig.width = 9,   # 图宽 / figure width
+                      fig.height = 5)  # 图高 / figure height
+options(max.print = 80) # 控制打印输出的最大行数
+```
+
+
+```{r packages}
+library(tidyverse)
+library(ggtext)
+library(patchwork)
+library(ggrepel)
+library(scales)
+
+# 设置默认绘图主题
+theme_set(theme_minimal())
+
+# 定义颜色调色板
+pal <- c(
+  nus_blue   = "#003D7C",
+  blue       = "#2E75B6",
+  nus_orange = "#EF7C00",
+  ice        = "#D6E8F7",
+  grey       = "#6B7D8C"
+)
+```
+
+```{r install, eval=FALSE}
+install.packages(c("ggtext", "patchwork", "ggrepel", "scales"))
+```
+
+```{r load-files}
+# List all files in the data directory
+files <- list.files("D:/2/Data/res", full.names = TRUE)
+```
+
+```{r read}
+# Read all files and stack them into one data frame
+residents_raw <- read_csv(files)
+```
+
+```{r rename}
+# 重命名变量
+residents <- residents_raw %>%
+  rename(
+    planning_area = PA,
+    subzone       = SZ,
+    age_group     = AG,
+    sex           = Sex,
+    dwelling_type = TOD,
+    residents     = Pop,
+    year          = Time
+  )
+```
+
+```{r recode-90}
+# 修正数据值 修改年龄组标签
+residents <- residents %>% mutate(age_group = 
+                              recode(age_group,
+                                '90_and_Over' = '90_and_over'
+                                    )
+                                  )
+```
+
+
+```{r year-focus}
+y_latest <- max(residents$year)
+y_latest
+```
+
+```{r year-comparison}
+# 计算2000年与最新年份的人口变化
+pa_change <- residents %>%
+  filter(year %in% c(2000, y_latest)) %>% # 只保留2000和最新年份
+  group_by(planning_area, year) %>% # 按规划区+年份分组
+  summarise(total = sum(residents, na.rm = TRUE), .groups = "drop") %>% # 计算每个区域的总人口
+  pivot_wider(           # 宽表格式：2000和2025变成两列
+    names_from   = year,
+    values_from  = total,
+    names_prefix = "y"
+  ) %>%
+  mutate(     # 计算变化
+    change     = y2025 - y2000,
+    pct_change = 100 * change / y2000,
+    direction  = if_else(change >= 0, "Growth", "Decline")
+  ) %>%
+  filter(!is.na(y2000), y2000 > 0, y2025 > 0) %>%  # 删除无效数据
+  arrange(desc(change))
+
+pa_change %>% head(10)
+```
+
+
+```{r simplify-dwelling}
+# 简化住房类型
+residents <- residents %>%
+  mutate(
+    dwelling_broad = case_when(
+      str_detect(dwelling_type, "HDB 1")            ~ "HDB Small (1–2 Room)",
+      str_detect(dwelling_type, "HDB 3")            ~ "HDB 3-Room",
+      str_detect(dwelling_type, "HDB 4")            ~ "HDB 4-Room",
+      str_detect(dwelling_type, "HDB 5|Executive")  ~ "HDB Large (5-Room+)",
+      str_detect(dwelling_type, "Condominium")      ~ "Condo / Apartment",
+      str_detect(dwelling_type, "Landed")           ~ "Landed",
+      str_detect(dwelling_type, "Other")            ~ "Other / HUDC",
+      str_detect(dwelling_type, "HUDC")             ~ "Other / HUDC",
+      TRUE                                          ~ "NA"
+      # The last one (else) should not happen because above we covered all options
+    )
+  )
+
+# Like always, we should check the output just in case
+residents %>%
+  count(dwelling_broad, dwelling_type) %>%
+  arrange(dwelling_broad)
+```
+
+## Section 6: Visualising the answer
+
+### Plot 1: Top growing and declining areas (bar chart)
+
+```{r growth-bar-step1}
+growth_subset <- bind_rows(
+  pa_change %>% slice_max(change, n = 10),
+  pa_change %>% slice_min(change, n = 10)
+) %>%
+  mutate(planning_area = fct_reorder(planning_area, change))
+
+# Step 1: plain bar
+ggplot(growth_subset, aes(x = change, y = planning_area)) +
+  geom_col()
+```
+
+```{r growth-bar-final}
+ggplot(growth_subset, aes(x = change, y = planning_area, fill = direction)) +
+  geom_col() +
+  geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.5) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c("Growth" = pal[["nus_blue"]], "Decline" = pal[["nus_orange"]])) +
+  labs(
+    title    = "Resident population change by planning area, 2000–2025",
+    subtitle = "Top 10 growing and top 10 declining areas",
+    x        = "Change in residents (2000 -> 2025)",
+    y        = NULL,
+    fill     = NULL,
+    caption  = "Source: Singapore Department of Statistics"
+  ) +
+  theme(legend.position = "top")
+```
+
+
+### Plot 2: Dumbbell chart: 2000 vs latest population
+
+```{r dumbbell-prep}
+dumbbell_data <- pa_change %>%
+  filter(y2025 >= 20000) %>%
+  mutate(planning_area = fct_reorder(planning_area, y2025))
+
+dumbbell_data
+```
+
+#### Step 1: segments only
+
+
+```{r dumbbell-step1}
+ggplot(dumbbell_data, aes(y = planning_area)) +
+  geom_segment(
+    aes(x = y2000, xend = y2025, yend = planning_area),
+    colour = "grey70",
+    linewidth = 0.9
+  )
+```
+
+#### Step 2: add coloured endpoints
+
+```{r dumbbell-step2}
+ggplot(dumbbell_data, aes(y = planning_area)) +
+  geom_segment(
+    aes(x = y2000, xend = y2025, yend = planning_area),
+    colour = "grey70", linewidth = 0.9
+  ) +
+  geom_point(aes(x = y2000), colour = pal["nus_blue"],   size = 3.5) +
+  geom_point(aes(x = y2025), colour = pal["nus_orange"], size = 3.5)
+```
+
+#### Step 3: add axis formatting and a colour-coded subtitle.
+
+```{r dumbbell-final}
+ggplot(dumbbell_data, aes(y = planning_area)) +
+  geom_segment(
+    aes(x = y2000, xend = y2025, yend = planning_area),
+    colour = "grey70", linewidth = 0.9
+  ) +
+  geom_point(aes(x = y2000), colour = pal["nus_blue"],   size = 3.5) +
+  geom_point(aes(x = y2025), colour = pal["nus_orange"], size = 3.5) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(
+    title    = "Resident population: 2000 vs now",
+    subtitle = "<span style='color:#003D7C'>&#9679; 2000</span>  &nbsp;&nbsp;  <span style='color:#EF7C00'>&#9679; 2025</span>",
+    x        = "Residents",
+    y        = NULL,
+    caption  = "Source: Singapore Department of Statistics"
+  ) +
+  theme(plot.subtitle = ggtext::element_markdown())
+```
+
+### Plot 3: Dwelling type composition
+
+
+```{r dwelling-shares}
+dwelling_shares <- residents %>%
+  filter(year == y_latest,
+         planning_area %in% dumbbell_data$planning_area) %>%
+  group_by(planning_area, dwelling_broad) %>%
+  summarise(total = sum(residents, na.rm = TRUE), .groups = "drop") %>%
+  group_by(planning_area) %>%
+  mutate(share = total / sum(total)) %>%
+  ungroup() %>%
+  mutate(planning_area = fct_reorder(
+    planning_area,
+    share * (dwelling_broad == "HDB Large (5-Room+)"),
+    .fun = sum
+  ))
+
+# dwelling_shares %>% head(10)
+glimpse(dwelling_shares)
+```
+
+#### Step 1: basic stacked bar
+
+
+```{r dwelling-step1}
+ggplot(dwelling_shares, aes(x = share, y = planning_area, fill = dwelling_broad)) +
+  geom_col(position = "stack")
+```
+#### Step 2: percentage x-axis, particular palette, and legend at bottom
+
+```{r mixed-palette}
+palette_dwelling <- c(
+  "HDB Small (1–2 Room)" = "#D6E8F7",
+  "HDB 3-Room"           = "#82B9E0",
+  "HDB 4-Room"           = "#2E75B6",
+  "HDB Large (5-Room+)"  = "#1A3A5C",
+  "Condo / Apartment"    = "#E8703A",
+  "Landed"               = "#C04010",
+  "Other / HUDC"         = "#9E9E9E"
+)
+```
+
+
+```{r dwelling-final}
+ggplot(dwelling_shares, aes(x = share, y = planning_area, fill = dwelling_broad)) +
+  geom_col(position = "stack") +
+  scale_x_continuous(labels = scales::percent) +
+  scale_fill_manual(values = palette_dwelling) +
+  labs(
+    title   = "Dwelling type composition by planning area",
+    x       = "Share of residents",
+    y       = NULL,
+    fill    = "Dwelling type",
+    caption = "Source: Singapore Department of Statistics"
+  ) +
+  theme(legend.position = "bottom") +
+  guides(fill = guide_legend(nrow = 2))
+```
+
+### Plot 4: Age structure
+
+```{r age-structure}
+age_order <- c("0_to_4","5_to_9","10_to_14","15_to_19","20_to_24",
+               "25_to_29","30_to_34","35_to_39","40_to_44","45_to_49",
+               "50_to_54","55_to_59","60_to_64","65_to_69","70_to_74",
+               "75_to_79","80_to_84","85_to_89","90_and_over")
+
+age_profiles <- residents %>%
+  filter(
+    year == y_latest,
+    planning_area %in% c("Punggol", "Sengkang", "Toa Payoh", "Queenstown")
+  ) %>%
+  group_by(planning_area, age_group) %>%
+  summarise(total = sum(residents, na.rm = TRUE), .groups = "drop") %>%
+  group_by(planning_area) %>%
+  mutate(
+    share     = total / sum(total),
+    age_group = factor(age_group, levels = age_order)
+  ) %>%
+  ungroup()
+
+age_profiles
+```
+
+#### Step 1: basic faceted bar
+
+```{r age-step1}
+ggplot(age_profiles, aes(x = age_group, y = share)) +
+  geom_col() +
+  facet_wrap(~planning_area, ncol = 2) +
+  coord_flip()
+```
+
+#### Step 2: percentage axis, fill by area, labels
+
+```{r age-final}
+ggplot(age_profiles, aes(x = age_group, y = share, fill = planning_area)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~planning_area, ncol = 2) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set1") +
+  coord_flip() +
+  labs(
+    title    = "Age structure of residents",
+    subtitle = "Contrasting new towns vs mature estates",
+    x        = "Age group",
+    y        = "Share of residents",
+    caption  = "Source: Singapore Department of Statistics"
+  )
+```
+
+
+### Plot 5: Dumbbell of condominium share (2000 vs now)
+
+```{r condo-dumbbell-prep}
+condo_change <- residents %>%
+  filter(year %in% c(2000, y_latest)) %>%
+  group_by(planning_area, year) %>%
+  mutate(pa_total = sum(residents, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(str_detect(dwelling_type, "Condominium")) %>%
+  group_by(planning_area, year, pa_total) %>%
+  summarise(condo = sum(residents, na.rm = TRUE), .groups = "drop") %>%
+  mutate(condo_share = condo / pa_total) %>%
+  select(planning_area, year, condo_share) %>%
+  pivot_wider(
+    names_from   = year,
+    values_from  = condo_share,
+    names_prefix = "y"
+  ) %>%
+  filter(!is.na(y2000), !is.na(y2025)) %>%
+  mutate(
+    change        = y2025 - y2000,
+    planning_area = fct_reorder(planning_area, y2025)
+  ) %>%
+  filter(pmax(y2000, y2025) > 0.05) %>%
+  arrange(desc(y2025))
+```
+
+
+```{r condo-dumbbell-final}
+ggplot(condo_change, aes(y = planning_area)) +
+  geom_segment(
+    aes(x = y2000, xend = y2025, yend = planning_area),
+    colour = "grey70", linewidth = 0.9
+  ) +
+  geom_point(aes(x = y2000), colour = pal["nus_blue"],   size = 3.5) +
+  geom_point(aes(x = y2025), colour = pal["nus_orange"], size = 3.5) +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title    = "Condominium share of residents: 2000 vs now",
+    subtitle = "<span style='color:#003D7C'>&#9679; 2000</span>  &nbsp;&nbsp;  <span style='color:#EF7C00'>&#9679; now</span>",
+    x        = "Share of residents in condominiums",
+    y        = NULL,
+    caption  = "Source: Singapore Department of Statistics"
+  ) +
+  theme(plot.subtitle = ggtext::element_markdown())
+```
+
+------------------------------------------------------------------------
+
+## Answering the research question
+
+```{r answer-summary}
+pa_change %>%
+  slice_max(change, n = 5) %>%
+  select(planning_area, y2000, y2025, change, pct_change) %>%
+  mutate() %>%
+  knitr::kable(
+    col.names   = c("Planning area", "Pop 2000", "Pop 2025", "Change", "% change"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+```{r answer-summary2}
+pa_change %>%
+  slice_max(change, n = 5) %>%
+  select(planning_area, y2000, y2025, change, pct_change) %>%
+  mutate(across(where(is.numeric), round)) %>%
+  knitr::kable(
+    col.names   = c("Planning area", "Pop 2000", "Pop 2025", "Change", "% change"),
+    format.args = list(big.mark = ",")
+  )
+```
