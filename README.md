@@ -14,4 +14,10 @@ Apply statistical methods (e.g., regression or grouped summaries) to examine rel
 The overall workflow is:
 Import → Clean → Explore → Analyze
 
-## 02
+## 02 Complete data analysis process   
+**Research Questions (Analysis Objectives):**   
+*a. Which planning areas have the fastest population growth?*   
+*b. How is housing structure changing?*   
+*c. How have HDB house prices changed since the pandemic?*   
+
+
