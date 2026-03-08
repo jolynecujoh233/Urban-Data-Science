@@ -16,8 +16,8 @@ Import → Clean → Explore → Analyze
 
 ## 02 Complete data analysis process   
 **Research Questions (Analysis Objectives):**   
-*a. Which planning areas have the fastest population growth?*   
-*b. How is housing structure changing?*   
-*c. How have HDB house prices changed since the pandemic?*   
+*a. Which planning areas have the fastest population growth? (02-1)*   
+*b. How is housing structure changing? (02-2)*   
+*c. How have HDB house prices changed since the pandemic? (02-2)*   
 
 
