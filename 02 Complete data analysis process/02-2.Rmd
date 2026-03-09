@@ -1,0 +1,236 @@
+---
+title: "session2"
+author: "jolynecujoh233"
+date: "2026-03-09"
+output: pdf_document
+---
+
+### The dataset
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+# 设置R Markdown代码块的全局参数  Set global options for R Markdown code chunks
+knitr::opts_chunk$set(echo = TRUE, # 显示代码 / show code in output
+                      warning = FALSE, # 不显示警告 / suppress warnings
+                      message = FALSE, # 不显示package提示 / suppress messages
+                      fig.width = 9,   # 图宽 / figure width
+                      fig.height = 5)  # 图高 / figure height
+options(max.print = 80) # 控制打印输出的最大行数
+```
+
+
+```{r packages}
+library(tidyverse)
+library(ggtext)
+library(patchwork)
+library(ggrepel)
+library(scales)
+
+# 设置默认绘图主题
+theme_set(theme_minimal())
+
+# 定义颜色调色板
+pal <- c(
+  nus_blue   = "#003D7C",
+  blue       = "#2E75B6",
+  nus_orange = "#EF7C00",
+  ice        = "#D6E8F7",
+  grey       = "#6B7D8C"
+)
+```
+
+```{r install, eval=FALSE}
+install.packages(c("ggtext", "patchwork", "ggrepel", "scales"))
+```
+
+```{r load-files}
+# List all files in the data directory
+files <- list.files("D:/2/Data/res", full.names = TRUE)
+```
+
+```{r read}
+# Read all files and stack them into one data frame
+residents_raw <- read_csv(files)
+```
+
+
+```{r load-hdb}
+hdb <- read_csv("D:/2/data2/Resale flat prices based on registration date from Jan-2017 onwards.csv")
+glimpse(hdb)
+```
+
+```{r clean-hdb}
+hdb <- hdb %>%
+  mutate(
+    date      = ym(month),
+    year_hdb  = year(date),
+    price_psm = resale_price / floor_area_sqm,
+    flat_type = str_to_title(flat_type),
+    flat_type = fct_relevel(flat_type,
+                  "1 Room", "2 Room", "3 Room", "4 Room",
+                  "5 Room", "Executive", "Multi-Generation"),
+    town      = str_to_title(town)
+  )
+hdb %>% count(flat_type)
+```
+
+### Colour palette and subsets
+
+```{r hdb-subsets}
+y_hdb <- max(hdb$year_hdb)
+
+flat_colours <- c(
+  "3 Room"    = "#1A3A5C",
+  "4 Room"    = "#2E75B6",
+  "5 Room"    = "#E8703A",
+  "Executive" = "#0D8A8A"
+)
+
+# Plot A: annual median price by flat type
+hdb_trend <- hdb %>%
+  filter(flat_type %in% c("3 Room", "4 Room", "5 Room", "Executive")) %>%
+  group_by(year_hdb, flat_type) %>%
+  summarise(median_price = median(resale_price), .groups = "drop")
+
+# Plot B: most recent year's town medians for 4-Room flats
+hdb_towns_4room <- hdb %>%
+  filter(year_hdb == y_hdb, flat_type == "4 Room") %>%
+  group_by(town) %>%
+  summarise(median_price = median(resale_price),
+            n            = n(),
+            .groups      = "drop") %>%
+  filter(n >= 30)
+```
+
+
+```{r hdb-check1}
+glimpse(hdb_trend)
+```
+```{r hdb-check2}
+glimpse(hdb_towns_4room)
+```
+
+------------------------------------------------------------------------
+
+## Level 1 — The baseline: where we start
+
+```{r baseline-a}
+p_A <- ggplot(hdb_trend, aes(x = year_hdb, y = median_price, colour = flat_type)) +
+  geom_line() +
+  scale_colour_manual(values = flat_colours)
+p_A
+```
+
+```{r baseline-b}
+p_B <- ggplot(hdb_towns_4room,
+              aes(x = median_price, y = reorder(town, median_price))) +
+  geom_col(fill = "steelblue")
+p_B
+```
+
+
+------------------------------------------------------------------------
+
+## Level 2 — patchwork: composing figures
+
+
+```{r patchwork-sidebyside, fig.height=4}
+p_A + p_B        # side by side
+```
+
+```{r patchwork-stacked, fig.height=8}
+p_A / p_B        # stacked
+```
+
+
+```{r patchwork-annotation, fig.height=8}
+(p_A / p_B) +
+  plot_annotation(
+    title      = "HDB Resale Flat Prices — Two perspectives",
+    subtitle   = paste0("A - All flats, 2017-", y_hdb, " | B - 4-Room flats: ", y_hdb, " only"),
+    caption    = "Source: HDB, data.gov.sg",
+    tag_levels = "A"
+  )
+```
+
+------------------------------------------------------------------------
+
+## Level 3 — ggrepel and plot-type redesign
+
+### Alternative for the bar chart for Plot B
+
+
+```{r dot-step1}
+ggplot(hdb_towns_4room,
+       aes(x = median_price, y = reorder(town, median_price))) +
+  geom_segment(aes(x = min(median_price) * 0.92,
+                   xend = median_price, yend = town),
+               colour = "grey80") +
+  geom_point(colour = pal["nus_blue"], size = 3) +
+  scale_x_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(title = paste0("Median 4-Room resale price by town, ", y_hdb),
+       x = "Median resale price (S$)", y = NULL,
+       caption = "Source: HDB, data.gov.sg. Towns with >= 30 transactions.")
+```
+
+### Adding ggrepel: labelling the expensive outliers
+
+
+```{r dot-with-repel, fig.height=6}
+ggplot(hdb_towns_4room,
+       aes(x = median_price,
+           y = reorder(town, median_price),
+           label = if_else(median_price > 620000, town, NA_character_))) +
+  geom_segment(aes(x = min(median_price) * 0.92,
+                   xend = median_price, yend = town),
+               colour = "grey80") +
+  geom_point(aes(colour = median_price > 620000), size = 3) +
+  geom_text_repel(
+    nudge_x      = 15000,
+    direction    = "y",
+    size         = 3.0,
+    colour       = pal["nus_orange"],
+    segment.size = 0.3,
+    na.rm        = TRUE,
+    seed         = 42
+  ) +
+  scale_colour_manual(values = c("TRUE" = pal["nus_orange"], "FALSE" = pal["blue"]),
+                      guide = "none") +
+  scale_x_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(title = "Which towns command the highest 4-Room prices?",
+       subtitle = "Orange: towns with median above S$620,000",
+       x = "Median resale price (S$)", y = NULL,
+       caption = "Source: HDB, data.gov.sg. Towns with >= 30 transactions.")
+```
+
+```{r final-composed, fig.height=10}
+p_B <- ggplot(hdb_towns_4room,
+              aes(x = median_price,
+                  y = reorder(town, median_price),
+                  label = if_else(median_price > 620000, town, NA_character_))) +
+  geom_segment(aes(x = min(median_price) * 0.92,
+                   xend = median_price, yend = town),
+               colour = "grey80") +
+  geom_point(aes(colour = median_price > 620000), size = 3) +
+  geom_text_repel(nudge_x = 15000, direction = "y", size = 3.0,
+                  colour = pal["nus_orange"], segment.size = 0.3,
+                  na.rm = TRUE, seed = 42) +
+  scale_colour_manual(values = c("TRUE" = pal["nus_orange"], "FALSE" = pal["nus_blue"]),
+                      guide = "none") +
+  scale_x_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(x = "Median resale price (S$)", y = NULL)
+
+(p_A / p_B) +
+  plot_annotation(
+    title      = "Singapore HDB resale market: Post-pandemic surge through two perspectives",
+    caption    = "Source: HDB, data.gov.sg",
+    tag_levels = "A",
+    theme = theme(
+      plot.title   = element_text(size = 14, face = "bold", colour = pal["nus_blue"]),
+      plot.caption = element_text(colour = "grey60", size = 9)
+    )
+  )
+```
