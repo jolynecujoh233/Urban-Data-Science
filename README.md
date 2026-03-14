@@ -20,4 +20,12 @@ Import → Clean → Explore → Analyze
 *b. How is housing structure changing? (Rmd 02-2)*   
 *c. How have HDB house prices changed since the pandemic? (Rmd 02-2)*   
 
-## 03
+## 03 Fundamental statistical analysis   
+Correlation between variables   
+Confounders and misleading relationships   
+Linear regression models   
+Using Singapore HDB resale flat price data as a case study   
+Combining visualisation and statistical modelling to understand housing prices   
+**Research Questions (Analysis Objectives):**   
+*Does flat size explain HDB resale prices?*
+*And does controlling for flat type change the result?*
