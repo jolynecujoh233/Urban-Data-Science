@@ -1,0 +1,553 @@
+---
+title: "session3"
+author: "jolynecujoh233"
+date: "2026-03-12"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5)
+options(max.print = 80)
+```
+
+------------------------------------------------------------------------
+
+## Welcome
+
+This session addresses the core statistical concepts such as correlation, confounders, and linear regression.
+These are all applied to HDB Resale Flat prices, the dataset that we used last week.
+
+------------------------------------------------------------------------
+
+## Required packages
+
+As always, we need some packages.
+Remember to install those that you do not have installed yet (and do it in the console).
+```{r install, eval=FALSE}
+install.packages(c("corrplot", "GGally", "broom", "ggfortify"))
+```
+
+In addition, we will establish some custom colours (this is purely optional and largely subjective, you can define your own colours as well).
+
+```{r packages}
+library(tidyverse)
+library(patchwork)
+library(scales)
+library(corrplot)
+library(GGally)
+library(broom)
+library(ggfortify)
+
+theme_set(theme_minimal(base_size = 12))
+
+pal <- c(
+  nus_blue   = "#003D7C",
+  blue       = "#2E75B6",
+  nus_orange = "#EF7C00",
+  ice        = "#D6E8F7",
+  grey       = "#6B7D8C"
+)
+
+flat_colours <- c(
+  "3 Room"    = "#1A3A5C",
+  "4 Room"    = "#2E75B6",
+  "5 Room"    = "#EF7C00",
+  "Executive" = "#0D8A8A"
+)
+```
+
+------------------------------------------------------------------------
+
+## Statistical analysis
+
+The two previous sessions described patterns such as population change, price trends — but we did not look much into the 'why' or 'how'.
+
+------------------------------------------------------------------------
+
+## Research question
+
+The main objective today is to answer the following question:
+
+> Does flat size explain HDB resale flat prices, and does controlling for flat type change the answer?
+
+------------------------------------------------------------------------
+
+## Dataset — HDB resale flat prices
+
+We use the same data as in Session 2. Let's load it.
+
+```{r load-hdb}
+hdb <- read_csv("data/Resale flat prices based on registration date from Jan-2017 onwards.csv")
+```
+
+and remind ourselves about its content and structure:
+
+```{r glimpse-hdb}
+glimpse(hdb)
+```
+
+Now let's do some cleaning like last time, but with some additional things:
+
+```{r clean-hdb}
+hdb <- hdb %>%
+  mutate(
+    date            = ym(month),
+    year            = year(date),
+    flat_type       = str_to_title(flat_type),
+    flat_type       = fct_relevel(flat_type,
+                        "1 Room", "2 Room", "3 Room", "4 Room",
+                        "5 Room", "Executive", "Multi-Generation"),
+    town            = str_to_title(town),
+    price_psm       = resale_price / floor_area_sqm,
+    storey_lo       = str_extract(storey_range, "^\\d+") %>% as.numeric(),
+    # "^\\d+" is a regular expression meaning to fetch digits at the start of the string
+    # You do not need to memorise regex syntax — regex101.com will decode any
+    # pattern for you, and an LLM will write one from a plain-English description.  
+    storey_hi       = str_extract(storey_range, "\\d+$") %>% as.numeric(),
+    storey_mid      = (storey_lo + storey_hi) / 2,
+    remaining_lease = 99 - (year - lease_commence_date)
+  )
+```
+
+Check the result:
+
+```{r glimpse-hdb-modified}
+glimpse(hdb)
+```
+
+It looks neater and we have turned some variables into numerical information, which will be helpful for statistical analyses.
+
+## Controlling for a variable
+
+You do not need to know anything about real estate to know that in general larger flats cost more.
+But we should ask whether _within flats of the same type_ (or _within the same neighbourhoods_), does the floor area still matter?
+As well as: does the relationship change depending on which flat type you look at?
+
+'Controlling for a variable' means holding it constant while you examine the relationship between two other things.
+Real estate prices are shaped by many factors simultaneously, and any one of them can distort your interpretation of another if you ignore it.
+Some important ones in this dataset would be:
+
+- Flat type. A 5-Room flat costs more than a 3-Room flat for many reasons: it has more rooms, it attracts different buyers, and it is often in different locations. It also happens to have a larger floor area. If you ignore flat type and analyse price based on floor area alone, the slope absorbs all of those differences at once, and not just the size premium you are trying to isolate.
+- Location (neighbourhood). A 100 sqm 4-Room flat in Queenstown typically fetches much more than a 120 sqm 5-Room flat in Woodlands. If you compare two such transactions and ignore the location, you might conclude that size barely matters or even works backwards.
+
+```{r location-comparison}
+bind_rows(
+hdb %>%
+  filter(town == 'Queenstown') %>%
+  filter(year==2026) %>%
+  filter(floor_area_sqm==102) %>%
+  head(2) %>%
+  select(town, floor_area_sqm, resale_price, everything()),
+hdb %>%
+  filter(town == 'Woodlands') %>%
+  filter(year==2026) %>%
+  filter(floor_area_sqm==120) %>%
+  head(2) %>%
+  select(town, floor_area_sqm, resale_price, everything())
+)
+```
+
+- Storey. Higher floors command a premium. A flat on the 15th floor and one on the 5th floor of the same block can differ by tens of thousands of dollars. Ignoring storey conflates the vertical premium with everything else you are trying to measure. Here is an example for a particular block.
+
+```{r storey-comparison}
+hdb %>%
+  filter(block == 555 & street_name == 'WOODLANDS DR 53') %>%
+  filter(floor_area_sqm==102) %>%
+  filter(year==2025) %>%
+  select(storey_range, resale_price, everything())
+```
+
+
+- Remaining lease. HDB flats depreciate as their 99-year lease runs down. A flat with 60 years left is worth less than an otherwise identical flat with 90 years left. This is relevant especially when comparing older estates with newer ones.
+
+If you combine all flat types together and run a simple regression of price on floor area, the model you get reflects all of those effects combined together, and not just the floor area.
+
+This session will help start making that separation.
+
+------------------------------------------------------------------------
+
+## Section 1 — Correlation: visualising relationships
+
+### What correlation measures
+
+The Pearson correlation measures the strength and direction of the *linear* relationship between two numeric variables.
+It ranges from −1 (perfect negative linear relationship) to +1 (perfect positive linear relationship), with 0 indicating no linear association.
+
+Two important limitations to keep in mind:
+
+1. Correlation measures linear association only — two variables can be strongly related in a non-linear way yet have correlation near zero.
+2. Correlation is not causation. Two variables can correlate because one causes the other, because both are caused by a third variable (a confounder), or by coincidence.
+
+We can start with computing the correlation between the floor area and resale price:
+
+```{r simple-corr}
+cor(hdb$floor_area_sqm, hdb$resale_price)
+```
+which suggests a moderately strong and positive association between the two.
+But remember -- there may be a hidden (third) variable causing that, and correlation does not imply causation. 
+We will dig more into this.
+
+### Building the correlation matrix
+
+In our dataset, we have many numerical variables, so we can compute the correlation among all possible pairs.
+
+```{r corr-prep}
+hdb_subset <- hdb %>%
+  filter(flat_type == "4 Room", year == 2025) %>%
+  select(resale_price, price_psm, floor_area_sqm, storey_mid, remaining_lease) %>%
+  drop_na()
+```
+
+Let's visualise it:
+
+```{r corr-matrix, fig.height=5}
+corr_matrix <- cor(hdb_subset)
+
+corrplot(corr_matrix,
+         method  = "color",
+         type    = "upper",
+         addCoef.col = "grey40",
+         tl.col  = "black",
+         tl.srt  = 45,
+         col     = colorRampPalette(c(pal["nus_orange"], "white", pal["nus_blue"]))(200),
+         title   = "Correlation matrix of 4-Room HDB resale flats",
+         mar     = c(0, 0, 1.5, 0))
+```
+
+An alternative, providing more information:
+
+```{r ggpairs, fig.height=6}
+ggpairs(hdb_subset,
+        title = "Pairwise relationships for 4-Room HDB resale flats",
+        upper = list(continuous = wrap("cor", size = 3.5)),
+        lower = list(continuous = wrap("points", alpha = 0.05, size = 0.5,
+                                       colour = pal["nus_blue"])),
+        diag  = list(continuous = wrap("densityDiag",
+                                       fill = pal["ice"], colour = pal["nus_blue"]))) +
+  theme(strip.text = element_text(size = 8))
+```
+
+
+------------------------------------------------------------------------
+
+## Section 2 — Confounders: when the third variable changes the picture (and a paradox)
+
+### What a confounder is
+
+A confounder is a variable that is associated with both the predictor of interest and the outcome, and whose omission creates a misleading apparent relationship between them.
+An example is given in this section.
+
+### Floor area, flat type, and price
+
+Let's start with a simple scatter plot.
+
+```{r confounder-pooled}
+ggplot(hdb %>% filter(year == 2023,
+                      flat_type %in% c("3 Room", "4 Room", "5 Room")),
+       aes(x = floor_area_sqm, y = resale_price)) +
+  geom_point(alpha = 0.07, colour = pal["nus_blue"], size = 0.8) +
+  geom_smooth(method = "lm", colour = pal["nus_orange"], se = FALSE) +
+  scale_y_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(title = "Floor area vs price; pooled across flat types",
+       x = "Floor area (sqm)", y = "Resale price (S$)",
+       caption = "Data: HDB")
+```
+
+You find that floor area is positively correlated with price.
+Is that because larger flats cost more? Yes. But, flat type (3-Room, 4-Room, 5-Room) is strongly associated with both floor area (larger types have more space) and price (larger types cost more).
+Flat type could be a confounder for the floor area–price relationship.
+
+Breaking down the plot by multiple flat types...
+
+```{r confounder-stratified}
+ggplot(hdb %>% filter(year == 2023,
+                      flat_type %in% c("3 Room", "4 Room", "5 Room")),
+       aes(x = floor_area_sqm, y = resale_price, colour = flat_type)) +
+  geom_point(alpha = 0.07, size = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~flat_type, scales = "free_x") +
+  scale_colour_manual(values = flat_colours, guide = "none") +
+  scale_y_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(title = "Floor area vs price; stratified by flat type",
+       x = "Floor area (sqm)", y = "Resale price (S$)",
+       caption = "Data: HDB")
+```
+
+The three panels do not behave the same way, and that is itself a finding.
+This is what happens when a confounder is strong enough to reverse the apparent direction of a relationship once you stratify.
+A trend that looks positive in the pooled data can turn flat or negative within (some) subgroups, or vice versa.
+
+The 3-Room and 5-Room panels both slope upward: within each type, larger flats do fetch higher prices.
+This is intuitive. Even among flats of the same category, there is some variation in size, and buyers pay for it.
+
+The 4-Room panel is perhaps surprising: its slope runs slightly downward.
+This is not a data error.
+The larger 4-Room units in this dataset tend to be older flats built in the 1970s–1980s in mature estates like Toa Payoh and Queenstown. Those flats have more remaining lease eroded and, despite their extra square metres, may sell at lower prices per sqm relative to newer, slightly smaller 4-Room units in estates like Punggol or Sengkang.
+In other words, location and lease age are confounding the size–price relationship within this flat type, a reminder that flat type is not the only confounder in the dataset, just the one we have addressed so far.
+
+Once you control for flat type, the apparent size–price relationship weakens considerably and even reverses for one type.
+
+------------------------------------------------------------------------
+
+## Section 3 — Linear regression
+
+### Why formalise the relationship?
+
+Section 2 showed visually that flat type confounds the floor area - price relationship.
+Regression lets us go further: we can hold multiple variables constant simultaneously and read off the contribution of each one in dollars, with a measure of uncertainty attached.
+
+The key questions we want the model to answer:
+
+- How much does each additional storey add to price, holding other things constant?
+- How much does each additional year of remaining lease add?
+- Does floor area matter at all once those two are controlled for?
+
+We will answer these by fitting multiple models in sequence and watching how the coefficients change.
+
+### Preparing the data
+
+```{r lm-prep}
+hdb_subset <- hdb %>%
+  filter(flat_type == "4 Room", year == 2023)
+glimpse(hdb_subset)
+```
+
+### Model 0: floor area only
+
+We start with the following model: regress price on floor area alone, with no other controls.
+This is the regression equivalent of the pooled chart in Section 2 — already within a single flat type, but not yet controlling for storey or lease.
+
+```{r model0}
+m0 <- lm(resale_price ~ floor_area_sqm, data = hdb_subset)
+
+tidy(m0) %>% mutate(across(where(is.numeric), ~round(.x, 0)))
+glance(m0) %>% select(r.squared, adj.r.squared, sigma, nobs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+How to interpret this?
+The estimate on `floor_area_sqm` is negative and the R2 is essentially zero, which is consistent with the slope we identified in Section 2.
+Within 4-Room flats, floor area alone is essentially useless as a predictor.
+The model is confident about this (p < 0.001), but confident about a meaningless number: floor area alone explains less than 1% of price variation among 4-Room flats and the sign is _wrong_ (the coefficient is negative, meaning the model predicts that larger floor area is associated with lower price — the opposite of what we would expect).
+Within this flat type, larger flats tend to be older flats in mature estates with eroded leases, and that drags their price down relative to smaller but newer units.
+
+Keep these numbers in mind as you work through the next models: the goal is to observe what happens to floor area's coefficient once proper controls enter.
+
+### Model 1: storey only
+
+Storey is an intuitive single predictor within a flat type: higher floors have better views and more natural light. Let's see how much each floor is worth.
+
+```{r model1}
+m1 <- lm(resale_price ~ storey_mid, data = hdb_subset)
+
+tidy(m1) %>% mutate(across(where(is.numeric), ~round(.x, 0)))
+glance(m1) %>% select(r.squared, adj.r.squared, sigma, nobs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+How to interpret this?
+The slope on `storey_mid` tells you the dollar premium per floor, on average, for a 4-Room flat in 2023.
+Each additional storey is associated with about $12k in resale price, on average.
+
+The R² tells you how much of the price variation storey alone explains.
+It will be meaningful but modest. Storey matters, but it is not the entire picture.
+
+A flat on the 15th floor commands roughly one hundred thousand dollars more than an otherwise identical flat on the 5th floor. R² = 0.32: storey alone explains 32% of price variation among 4-Room flats. That is a considerably different result for a single variable, and it immediately dwarfs the previous model's <1%, suggesting it is more useful as a predictor.
+
+The sigma (residual standard error) of about one hundred thousand dollars tells you the model's typical prediction error, which is substantial, because location and lease are not yet controlled.
+For a model with only one variable, it's not too bad.
+
+### Model 1b: remaining lease only
+
+Now we can take into account also lease as a predictor, and combine it with storey.
+However, before combining storey and lease, it is worth seeing what remaining lease achieves on its own.
+
+```{r model1b}
+m1b <- lm(resale_price ~ remaining_lease, data = hdb_subset)
+
+tidy(m1b) %>% mutate(across(where(is.numeric), ~round(.x, 0)))
+glance(m1b) %>% select(r.squared, adj.r.squared, sigma, nobs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+How to interpret this?
+Each additional year of remaining lease is associated with about $4k in price, the R² is about 0.2.
+Lease explains approx one fifth of variation on its own.
+This is less than storey, but still notable.
+Observe that the lease coefficient here is higher than it will show later in the combined model.
+The difference (about $1k per year) is the portion that was shared with storey: flats on higher floors in newer blocks also tend to have more remaining lease, so the two variables explain some of the same variation.
+The next model (M2), combining the two, separates their independent contributions.
+
+### Model 2: storey + remaining lease
+
+Flats with fewer years left on their 99-year lease are in general worth less.
+Adding `remaining_lease` should improve fit and give us the lease premium per year.
+
+```{r model2}
+m2 <- lm(resale_price ~ storey_mid + remaining_lease, data = hdb_subset)
+
+tidy(m2) %>% mutate(across(where(is.numeric), ~round(.x, 0)))
+glance(m2) %>% select(r.squared, adj.r.squared, sigma, nobs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+How to interpret this?
+Adding remaining lease raises R² by about 0.1, which is a notable increase.
+Each additional year of remaining lease is associated with about $3k in price, holding storey constant. A flat with 90 years left versus one with 60 years left, same storey, would differ by roughly $100k. Notice that the storey coefficient drops slightly: storey and remaining lease share a small amount of variation (higher floors in newer blocks tend to have more lease), so they partially explain each other.
+The coefficients are stable enough to read confidently but the small shift is worth acknowledging.
+
+### Model 3: storey + remaining lease + floor area
+
+Now we add floor area, the main focus of this session.
+This is the final test: after controlling for storey and lease, does floor area _recover_ a positive slope?
+
+```{r model3}
+m3 <- lm(resale_price ~ storey_mid + remaining_lease + floor_area_sqm,
+         data = hdb_subset)
+
+tidy(m3) %>% mutate(across(where(is.numeric), ~round(.x, 0)))
+glance(m3) %>% select(r.squared, adj.r.squared, sigma, nobs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+How to interpret this?
+Floor area's coefficient has flipped from a negative value in M0 to a few thousand dollars (positive value) in M3, which is a sign of reversal once storey and lease are held constant.
+The direction is now _correct_ and the magnitude is economically sensible: 10 extra sqm is associated with about $20k more in price, all else equal.
+The storey and lease coefficients barely change from M2, which tells you floor area is not strongly correlated with those two variables, it is adding largely independent information.
+
+However, R² rises marginally from the one in M2.
+Floor area adds little predictive power beyond storey and lease.
+The takeaway is: within the 4-Room segment, the lease and storey of the flat matters far more than how big it is.
+Size is secondary.
+This is the regression version of the visual finding from Section 2 — and it is only visible because we controlled for the right things first.
+
+### Visualising the storey premium
+
+Now we can visualise the relationship of the more relevant variable to the price, which is the storey.
+
+```{r lm-plot}
+ggplot(hdb_subset, aes(x = storey_mid, y = resale_price)) +
+  geom_point(alpha = 0.1, colour = pal["nus_blue"], size = 0.8) +
+  geom_smooth(method = "lm", colour = pal["nus_orange"],
+              fill = pal["ice"], linewidth = 1.1) +
+  scale_y_continuous(labels = dollar_format(prefix = "S$", big.mark = ",")) +
+  labs(
+    title    = "Storey vs resale price; 4-Room HDB flats",
+    x        = "Storey (midpoint of range)",
+    y        = "Resale price (S$)",
+    caption  = "Data: HDB"
+  )
+```
+
+### Residual diagnostics (advanced, optional)
+
+We inspect M3, which is the most complete model of the three.
+
+```{r m3-summary}
+summary(m3)
+```
+
+
+```{r lm-diagnostics, fig.height=6}
+autoplot(m3, which = 1:4,
+         colour = pal["nus_blue"], alpha = 0.2,
+         smooth.colour = pal["nus_orange"], smooth.linetype = "dashed") +
+  plot_annotation(
+    title = "Residual diagnostics — Model 3 (4-Room, 2023)",
+    theme = theme(plot.title = element_text(colour = pal["nus_blue"], face = "bold"))
+  )
+```
+
+What to look for:
+
+- Residuals vs Fitted: The smooth line is slightly curved — it runs roughly flat (drifting downward) across the first half of the fitted value range, then bends upward in the second half. This shape suggests mild non-linearity: the model overpredicts slightly for mid-range flats and underpredicts for the most expensive ones. The most likely culprit is `remaining_lease`, as its effect on price is not strictly linear, and flats with fewer than 60 years of lease remaining tend to lose value at an accelerating rate that a straight-line term cannot fully capture.
+- Q-Q plot: The interquartile range of residuals covers roughly $100k, but the maximum reaches nearly a million. The right tail is far heavier than a normal distribution, a small number of very expensive transactions pull the distribution hard to the right. The Q-Q points will follow the diagonal in the middle but deviate sharply upward at the right end.
+- Scale-Location: Given the asymmetry above, the spread of residuals almost certainly grows with fitted value, flats predicted at $700k+ will have much larger errors than those predicted at $400k. The smooth line will slope upward. This is __heteroscedasticity__ and it is not unusual in housing data. Heteroscedasticity means the model is less reliable at predicting expensive flats than cheap ones; its prediction errors are larger where the values are highest. A common fix is to model `log(resale_price)` as the outcome: the log transformation compresses the right tail and often stabilises the variance, at the cost of interpreting coefficients as percentage changes rather than dollar amounts. This can be explored in the homework.
+- Cook's Distance: With around ten thousands of observations, most points have negligible individual influence. The transaction(s) with quite high residuals may show elevated Cook's D and are worth inspecting manually with `augment(m3) %>% filter(.cooksd > 4/nrow(hdb_subset))`.
+
+------------------------------------------------------------------------
+
+## Answering the research question
+
+
+Floor area alone (M0) explains almost nothing within the 4-Room segment and points in the wrong direction.
+Storey and remaining lease are the real drivers: storey accounts for one third of price variation on its own (S$11,858 per floor), and adding lease brings the two-predictor model to R² = 0.4.
+Floor area becomes positive once those confounders are controlled in M3, but adds a negligible value to R². Size is secondary within the 4-Room segment, where other aspects like the lease matter far more than how big it is.
+
+There are two questions worth thinking about as we end this session.
+
+First: does controlling for confounders tell us that storey _causes_ higher prices?
+No. It gives us a cleaner association, but causation requires more.
+There may be other variables we have not measured or even thought of that are still distorting the estimates. 
+
+Second: how do we know that flat type influences floor area, and not the other way around?
+We do not, not from the data.
+The data only shows association; the causal direction comes from domain knowledge.
+HDB flat types are possibly fixed by the Housing and Development Board, so the type comes first and the floor area follows from it.
+That is knowledge about how housing planning works, not something the regression above can convey.
+Statistics quantifies relationships; the direction of causation is your focus as the analyst.
+Both of these limitations are why one of the next sessions moves to a different kind of design: one that uses the timing of real-world events rather than adding more controls, to get closer to a genuinely causal claim.
+
+------------------------------------------------------------------------
+
+## Some questions you might be asking
+
+_Does a higher R² always mean a better model?_
+
+Not necessarily. R² increases mechanically whenever you add a predictor, even a useless one — it can never decrease.
+This is why we report *adjusted* R², which penalises for added predictors that do not 'earn their place'.
+More fundamentally, R² measures fit to the sample data; it says nothing about causal validity.
+
+_My p-value is tiny. Does that mean the effect is large?_
+
+Statistical significance and practical significance are different things.
+With several thousand HDB transactions, a coefficient can be estimated precisely enough to be 'significant' even if the effect size is small.
+Always report the coefficient and its confidence interval, not just the p-value.
+
+_Does regression tell us what causes prices to be higher?_
+
+Not without additional assumptions. An observational regression tells us that floor area and price are _associated_, after conditioning on other predictors.
+Whether that is causal depends on whether all confounders are controlled.
+One of the next sessions introduces a design that moves closer to causal claims.
+
+---
+
+## Minute paper
+
+After you have completed the entire tutorial, please remember to fill the feedback and self-reflection form.
+
+The link is:
+`https://forms.gle/rYf9VFCGfa3ySFGi9`
+
+---
+
+## Homework (ungraded)
+
+- Repeat this exercise with another dataset.
+
+- Extend M3 with a more advanced model: add `town` as a fixed effect to M3 — `lm(resale_price ~ storey_mid + remaining_lease + floor_area_sqm + town, data = hdb_subset)`. How does the floor area coefficient change now that location is controlled? How much does R² rise?
+
+- Log-linear model: re-run M3 with `log(resale_price)` as the outcome. Use `exp(coef) - 1` to convert each coefficient to a percentage change. Does the storey premium feel more or less intuitive as a percentage?
+
+---
+
+## What's next?
+
+In Session 4, we will work on spatial data analytics.
+We move from tables and regressions to space, and incorporate the proximity to MRT in the work.
+
+## Notes / Disclosures
+
+The dataset used in this session is courtesy of the Housing and Development Board, Singapore. It is open data available at data.gov.sg.
+
+An AI tool was used to enhance the clarity and polish some of the code and text in this session.
