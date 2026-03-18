@@ -30,4 +30,11 @@ Combining visualisation and statistical modelling to understand housing prices
 *Does flat size explain HDB resale prices?*
 *And does controlling for flat type change the result?*   
 
-## 04
+## 04 Difference-in-Differences (DiD)   
+Spatial data & Spatial operations & Difference-in-Differences   
+**Research Questions (Analysis Objectives):**   
+*a. Does proximity to MRT affect HDB resale prices?*   
+*b. Did the new MRT line (TEL Stage 1) cause price increases in Woodlands?*   
+
+
+
