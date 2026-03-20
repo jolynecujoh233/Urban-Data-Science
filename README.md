@@ -34,7 +34,17 @@ Combining visualisation and statistical modelling to understand housing prices
 Spatial data & Spatial operations & Difference-in-Differences   
 **Research Questions (Analysis Objectives):**   
 *a. Does proximity to MRT affect HDB resale prices?*   
-*b. Did the new MRT line (TEL Stage 1) cause price increases in Woodlands?*   
+*b. Did the new MRT line (TEL Stage 1) cause price increases in Woodlands?*  
+
+## 05   
+
+
+## 06    
+Exploration of reviews   
+Tokenisation, word frequencies   
+。TF-IDF- what makes each area distinctive   
+。Sentiment   
+。LLM based review analysis   
 
 
 
