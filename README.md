@@ -36,8 +36,12 @@ Spatial data & Spatial operations & Difference-in-Differences
 *a. Does proximity to MRT affect HDB resale prices?*   
 *b. Did the new MRT line (TEL Stage 1) cause price increases in Woodlands?*  
 
-## 05   
-
+## 05 Platform Economy   
+Key Takeaways: Shift from real estate causal analysis (MRT impact) to platform economy and urban spatial patterns   
+**Research Questions:**   
+*a. Are Airbnb listings concentrated in certain areas?*   
+*b. Are they located near tourist attractions?*   
+*c. Are they distributed similarly to hotels?*   
 
 ## 06    
 Exploration of reviews   
