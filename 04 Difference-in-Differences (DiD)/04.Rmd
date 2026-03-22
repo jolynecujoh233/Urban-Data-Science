@@ -1,0 +1,803 @@
+---
+title: "session4"
+author: "jolynecujoh233"
+date: "2026-03-16"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5)
+options(max.print = 80)
+tmap::tmap_options(component.autoscale = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(sf)
+library(tmap)
+library(maptiles)
+library(scales)
+library(ggrepel)
+
+theme_set(theme_minimal(base_size = 12))
+
+pal <- c(
+  nus_blue   = "#003D7C",
+  blue       = "#2E75B6",
+  nus_orange = "#EF7C00",
+  ice        = "#D6E8F7",
+  grey       = "#6B7D8C"
+)
+
+# Official TEL colour: #9B5E25 (brown)
+TEL_BROWN <- "#9B5E25"
+# Official NSL colour: #D42E12 (red)
+NSL_RED <- "#D42E12"
+```
+
+
+
+
+
+
+```{r install, eval=FALSE}
+install.packages(c("sf", "tmap", "maptiles", "ggrepel"))
+```
+
+
+
+
+
+
+```{r load-raw, include=FALSE}
+hdb_raw <- read_csv(
+  "data/Resale flat prices based on registration date from Jan-2017 onwards.csv",
+  show_col_types = FALSE
+)
+
+hdb_pre <- hdb_raw %>%
+  mutate(
+    date      = ym(month),
+    year      = year(date),
+    price_psm = resale_price / floor_area_sqm
+  )
+```
+
+
+
+
+
+
+```{r motivating-plot-1}
+woodlands_trend <- hdb_pre %>%
+  filter(town == "WOODLANDS", year >= 2017) %>%
+  group_by(year) %>%
+  summarise(mean_psm = mean(price_psm), .groups = "drop")
+
+ggplot(woodlands_trend, aes(x = year, y = mean_psm)) +
+  geom_line(colour = pal["nus_blue"], linewidth = 1.2) +
+  geom_point(colour = pal["nus_blue"], size = 3) +
+  geom_vline(xintercept = 2020, linetype = "dashed",
+             colour = pal["nus_blue"], linewidth = 0.9) +
+  annotate("label", x = 2020.1, y = min(woodlands_trend$mean_psm) * 1.02,
+           label = "TEL Stage 1 opens\n31 Jan 2020",
+           hjust = 0, size = 3.2, colour = pal["nus_blue"],
+           fill = "white", label.size = 0.3) +
+  scale_x_continuous(breaks = 2017:2025) +
+  scale_y_continuous(labels = dollar_format(prefix = "$", big.mark = ","), limits = c(0, NA)) +
+  labs(
+    title   = "Mean HDB resale price per sqm, 2017–2025 | Woodlands",
+    x       = NULL,
+    y       = "Mean price per sqm ($)",
+    caption = "Data: HDB."
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+
+
+
+
+
+
+```{r motivating-plot-2}
+two_towns <- hdb_pre %>%
+  filter(town %in% c("WOODLANDS", "YISHUN"), year >= 2017) %>%
+  group_by(town, year) %>%
+  summarise(mean_psm = mean(price_psm), .groups = "drop") %>%
+  mutate(town_label = str_to_title(town))
+
+ggplot(two_towns, aes(x = year, y = mean_psm,
+                      colour = town_label, group = town_label)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 2020, linetype = "dashed",
+             colour = pal["nus_blue"], linewidth = 0.8) +
+  annotate("label", x = 2020.1,
+           y = max(two_towns$mean_psm) * 0.985,
+           label = "TEL opens in\nWoodlands only",
+           hjust = 0, size = 3.2, colour = pal[["nus_blue"]],
+           fill = "white", label.size = 0.3) +
+  scale_colour_manual(
+    values = c("Woodlands" = pal[["nus_blue"]], "Yishun" = pal[["nus_orange"]])
+  ) +
+  scale_x_continuous(breaks = 2017:2025) +
+  scale_y_continuous(labels = dollar_format(prefix = "$", big.mark = ","), limits = c(0, NA)) +
+  labs(
+    title    = "Mean HDB resale price per sqm, 2017–2025 | Woodlands and Yishun",
+    subtitle = "Yishun received no new MRT stations in this period",
+    x        = NULL,
+    y        = "Mean price per sqm ($)",
+    colour   = NULL,
+    caption  = "Data: HDB."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+
+
+
+
+```{r load-data}
+hdb <- hdb_raw %>%
+  mutate(
+    date            = ym(month),
+    year            = year(date),
+    price_psm       = resale_price / floor_area_sqm,
+    storey_lo       = str_extract(storey_range, "^\\d+") %>% as.numeric(),
+    storey_hi       = str_extract(storey_range, "\\d+$") %>% as.numeric(),
+    storey_mid      = (storey_lo + storey_hi) / 2,
+    remaining_lease = 99 - (year - lease_commence_date),
+    blk_no          = str_to_upper(str_trim(block)),
+    street_name     = str_to_upper(str_trim(street_name))
+  )
+
+cat("HDB transactions loaded:", nrow(hdb), "\n")
+cat("Date range:             ", format(min(hdb$date), "%b %Y"), "–",
+    format(max(hdb$date), "%b %Y"), "\n")
+```
+
+
+
+
+
+
+```{r load-blocks}
+# Block geocodes — pre-built from OneMap, one row per unique HDB block
+hdb_blocks <- read_csv("data/hdb_blocks.csv") %>%
+  mutate(
+    blk_no      = str_to_upper(str_trim(blk_no)),
+    street_name = str_to_upper(str_trim(street_name))
+  ) %>%
+  select(blk_no, street_name, lat, lon)
+
+# Convert to sf and project to SVY21 for metre-based distance calculations
+blocks_sf <- hdb_blocks %>%
+  drop_na(lat, lon) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(crs = 3414)
+
+cat("Geocoded blocks:", nrow(blocks_sf), "\n")
+```
+
+
+
+
+
+
+```{r mrt-stations}
+mrt_raw <- read_sf("data/TrainStation_Mar2026/RapidTransitSystemStation.shp") %>%
+  filter(!str_detect(STN_NAM_DE, "DEPOT")) %>%
+  st_transform(crs = 3414) %>%
+  st_centroid()
+
+glimpse(mrt_raw)
+```
+
+
+
+
+
+
+```{r mrt-stations-clean}
+# STN_NAM_DE contains the full station name (e.g. "WOODLANDS MRT STATION").
+# Interchange stations appear as one polygon per line in the shapefile, so
+# a station like Woodlands (NSL/TEL) has two rows. We keep one row per
+# unique station name after stripping the suffix.
+mrt_stations <- mrt_raw %>%
+  mutate(
+    station = str_to_title(
+      str_remove(STN_NAM_DE, " MRT STATION$| LRT STATION$")
+    )
+  ) %>%
+  distinct(station, .keep_all = TRUE) %>%
+  select(station, everything())
+
+cat("MRT/LRT stations loaded:", nrow(mrt_stations), "\n")
+```
+
+
+
+
+
+
+
+```{r tel-line}
+# --- Station identification ---
+tel_stage1_names <- c("Woodlands North", "Woodlands", "Woodlands South")
+
+tel_stage1_sf <- mrt_stations %>%
+  filter(station %in% tel_stage1_names)
+
+cat("TEL Stage 1 stations found:", nrow(tel_stage1_sf), "\n")
+tel_stage1_sf %>% select(station)
+```
+
+
+
+
+
+
+
+
+```{r tel-geometry}
+# --- Stage 1 solid line: TE1 to TE2 to TE3 ---
+# Derive directly from the shapefile geometries already loaded in tel_stage1_sf.
+# mrt_stations already holds centroid points (st_centroid() applied on load).
+# Sorting by latitude descending gives the correct North to South order:
+# TE1 Woodlands North, TE2 Woodlands, TE3 Woodlands South.
+tel_stage1_pts <- tel_stage1_sf %>%
+  mutate(lat_coord = st_coordinates(.)[, "Y"]) %>%
+  arrange(desc(lat_coord))
+
+tel_line_stage1 <- tel_stage1_pts %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+# --- Stage 2 dashed continuation ---
+# TEL Stage 2 opened 28 Aug 2021; Springleaf (TE4) and Lentor (TE5) are
+# the two Stage 2 stations nearest to Woodlands. 
+tel_stage2_visible <- c("Springleaf", "Lentor")
+
+tel_stage2_pts <- mrt_stations %>%
+  filter(station %in% tel_stage2_visible) %>%
+  mutate(lat_coord = st_coordinates(.)[, "Y"]) %>%
+  arrange(desc(lat_coord))   # N to S: Springleaf then Lentor
+
+te3_pt <- tel_stage1_pts %>%
+  filter(station == "Woodlands South") %>%
+  select(geometry)
+
+tel_line_stage2 <- bind_rows(te3_pt, tel_stage2_pts %>% select(geometry)) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+# --- Annotation label points ---
+te1_xy <- tel_stage1_pts %>%
+  filter(station == "Woodlands North") %>%
+  st_coordinates()
+
+te4_xy <- mrt_stations %>%
+  filter(station == "Springleaf") %>%
+  st_coordinates()
+
+tel_annotations <- tibble(
+  label = c("TEL Stage 1 (Jan 2020)", "TEL Stage 2 (Aug 2021)"),
+  X     = c(te1_xy[1, "X"] - 900,    # 900 m west of TE1 Woodlands North
+             te4_xy[1, "X"] - 300),   # 300 m west of TE4 Springleaf
+  Y     = c(te1_xy[1, "Y"] + 400,    # 400 m north of TE1
+             te4_xy[1, "Y"] + 300)    # 300 m north of TE4
+) %>%
+  st_as_sf(coords = c("X", "Y"), crs = 3414)
+```
+
+
+
+
+
+
+
+
+
+```{r nsl-line}
+# All NSL stations relevant to northern SG
+# We filter them from mrt_stations
+
+# Correct sequence along the NSL
+nsl_sequence <- c("Marsiling", "Woodlands", "Admiralty",
+                  "Sembawang", "Canberra", "Yishun", "Khatib")
+
+# Stations within the three study towns (Woodlands, Sembawang, Yishun)
+nsl_in_scope_names <- c("Woodlands", "Admiralty", "Sembawang", "Canberra", "Yishun")
+
+nsl_stations_sf <- mrt_stations %>%
+  filter(station %in% nsl_sequence) %>%
+  mutate(
+    in_scope   = station %in% nsl_in_scope_names,
+    line_order = match(station, nsl_sequence)
+  ) %>%
+  arrange(line_order)
+
+# Solid line for the relevant portion of the NSL (Marsiling through Khatib)
+nsl_line_solid <- nsl_stations_sf %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+# Dashed extensions — use the actual next stations on the NSL
+# Kranji is the next station of Marsiling; Ang Mo Kio is the next of Khatib.
+marsiling_pt <- nsl_stations_sf %>% filter(station == "Marsiling") %>% select(geometry)
+kranji_pt    <- mrt_stations    %>% filter(station == "Kranji")     %>% select(geometry)
+khatib_pt    <- nsl_stations_sf %>% filter(station == "Khatib")     %>% select(geometry)
+angmokio_pt  <- mrt_stations    %>% filter(station == "Ang Mo Kio") %>% select(geometry)
+
+nsl_ext_north <- bind_rows(marsiling_pt, kranji_pt) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+nsl_ext_south <- bind_rows(khatib_pt, angmokio_pt) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("LINESTRING")
+
+# Station name vectors used later to control map layers
+nsl_in_scope  <- nsl_stations_sf %>% filter( in_scope) %>% pull(station)
+nsl_ghost     <- nsl_stations_sf %>% filter(!in_scope) %>% pull(station)
+nsl_all_names <- nsl_stations_sf$station
+```
+
+
+
+
+
+
+
+```{r block-distances}
+# Full n_blocks × n_stations distance matrix
+dist_mat     <- st_distance(blocks_sf, mrt_stations)
+
+nearest_dist <- apply(dist_mat, 1, min)
+nearest_idx  <- apply(dist_mat, 1, which.min)
+
+blocks_proximity <- hdb_blocks %>%
+  mutate(
+    dist_to_mrt_m   = as.numeric(nearest_dist),
+    nearest_station = mrt_stations$station[nearest_idx]
+  )
+
+glimpse(blocks_proximity)
+summary(blocks_proximity$dist_to_mrt_m)
+```
+
+
+
+
+
+
+
+```{r join-distances}
+hdb <- hdb %>%
+  left_join(
+    blocks_proximity %>%
+      select(blk_no, street_name, dist_to_mrt_m, nearest_station),
+    by = c("blk_no", "street_name")
+  )
+
+glimpse(hdb)
+```
+
+
+
+
+
+
+
+```{r proximity-scatter}
+hdb_sample <- hdb %>%
+  filter(year == 2025, flat_type == "4 ROOM", !is.na(dist_to_mrt_m))
+
+ggplot(hdb_sample,
+       aes(x = dist_to_mrt_m / 1000, y = price_psm)) +
+  geom_point(colour = pal[["nus_blue"]], alpha = 0.07, size = 0.6) +
+  geom_smooth(method = "lm", colour = pal["nus_orange"],
+              se = TRUE, linewidth = 1.2) +
+  scale_x_continuous(
+    labels = label_number(suffix = " km"),
+    limits = c(0, NA)
+  ) +
+  scale_y_continuous(
+    labels = dollar_format(prefix = "$", big.mark = ","),
+    limits = c(0, NA)
+    ) +
+  labs(
+    title    = "Distance to nearest MRT station vs price per sqm",
+    subtitle = "All sold HDB 4-room flats in the city. Each point is a transaction",
+    x        = "Distance to nearest MRT/LRT station (km)",
+    y        = "Price per sqm ($)",
+    caption  = "Data: HDB, LTA, SLA."
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+
+
+
+
+
+
+```{r proximity-regression}
+prox_model <- lm(
+  price_psm ~ dist_to_mrt_m + storey_mid + remaining_lease,
+  data = hdb_sample
+)
+
+summary(prox_model)
+```
+
+
+
+
+
+```{r map-prep}
+set.seed(42)
+
+northern_towns <- c("WOODLANDS", "SEMBAWANG", "YISHUN")
+
+hdb_north_map <- hdb %>%
+  filter(year == 2025, town %in% northern_towns, !is.na(dist_to_mrt_m)) %>%
+  left_join(
+    hdb_blocks %>%
+      bind_cols(
+        st_coordinates(blocks_sf) %>%
+          as_tibble() %>%
+          rename(x_svy21 = X, y_svy21 = Y)
+      ),
+    by = c("blk_no", "street_name")
+  ) %>%
+  drop_na(x_svy21) %>%
+  st_as_sf(coords = c("x_svy21", "y_svy21"), crs = 3414) %>%
+  slice_sample(n = 2000)
+
+# Load URA planning area boundaries
+planning_areas <- read_sf("data/MasterPlan2019PlanningAreaBoundaryNoSea.geojson") %>%
+  st_transform(crs = 3414)
+
+# Filter to our three study towns
+if ("PLN_AREA_N" %in% names(planning_areas)) {
+  northern_areas <- planning_areas %>%
+    filter(PLN_AREA_N %in% northern_towns)
+} else {
+  # Fallback if field name differs — print columns to diagnose
+  cat("Planning area columns:", paste(names(planning_areas), collapse = ", "), "\n")
+  name_col <- names(planning_areas)[1]
+  northern_areas <- planning_areas %>%
+    filter(toupper(.data[[name_col]]) %in% northern_towns)
+}
+
+cat("Planning areas matched:", nrow(northern_areas), "\n")
+glimpse(hdb_north_map)
+```
+
+
+
+
+
+
+
+```{r map-prep2}
+# Download basemap tiles for the extent we are focusing on
+map_bbox <- hdb_north_map %>%
+  st_bbox() %>%
+  st_as_sfc() %>%
+  st_buffer(1500) %>%
+  st_transform(4326)
+
+basemap <- get_tiles(map_bbox, provider = "CartoDB.Positron",
+                     zoom = 13, crop = TRUE)
+
+# All MRT stations in the map area
+mrt_north <- mrt_stations %>%
+  st_filter(map_bbox %>% st_transform(3414) %>% st_as_sf())
+glimpse(mrt_north)
+```
+
+
+
+
+
+
+
+
+```{r map-static}
+tmap_mode("plot")
+
+tm_shape(basemap) +
+  tm_rgb() +
+  # -- Neighbourhood outlines and labels --
+  tm_shape(northern_areas) +
+  tm_borders(col = "grey30", lwd = 1.4) +
+  tm_text("PLN_AREA_N", col = "grey15", size = 0.72, fontface = "bold",
+          bg.color = "white", bg.alpha = 0.55) +
+  # -- HDB transaction dots --
+  tm_shape(hdb_north_map) +
+  tm_dots(
+    col     = "price_psm",
+    palette = c("#D6E8F7", "#2E75B6", pal["nus_blue"]),
+    style   = "quantile",
+    size    = 0.05,
+    alpha   = 0.6,
+    title   = "Price per sqm ($)"
+  ) +
+  # ---- NSL (faint — secondary context) ------------------------------------ #
+  tm_shape(nsl_ext_south) +
+  tm_lines(col = NSL_RED, lwd = 1.5, lty = "dashed", alpha = 0.22) +
+  tm_shape(nsl_ext_north) +
+  tm_lines(col = NSL_RED, lwd = 1.5, lty = "dashed", alpha = 0.22) +
+  # Solid corridor
+  tm_shape(nsl_line_solid) +
+  tm_lines(col = NSL_RED, lwd = 2, alpha = 0.30) +
+  # Out-of-study-area stations (Khatib, Marsiling)
+  tm_shape(nsl_stations_sf %>% filter(!in_scope)) +
+  tm_dots(col = "white", size = 0.18, shape = 21,
+          border.col = NSL_RED, border.lwd = 1, alpha = 0.35) +
+  tm_text("station", col = NSL_RED, size = 0.38, alpha = 0.45,
+          ymod = 0.7, fontface = "italic") +
+  # In-scope NSL stations (excl. Woodlands — handled on TEL layer below)
+  tm_shape(nsl_stations_sf %>% filter(in_scope, station != "Woodlands")) +
+  tm_dots(col = NSL_RED, size = 0.22, shape = 21,
+          border.col = "white", border.lwd = 1, alpha = 0.40) +
+  tm_text("station", col = NSL_RED, size = 0.42, alpha = 0.60,
+          ymod = 0.80, fontface = "plain",
+          bg.color = "white", bg.alpha = 0.60) +
+  # ---- TEL (primary focus) ------------------------------------------------ #
+  # Stage 2 dashed continuation
+  tm_shape(tel_line_stage2) +
+  tm_lines(col = TEL_BROWN, lwd = 2.2, lty = "dashed", alpha = 0.70) +
+  # Stage 1 solid line
+  tm_shape(tel_line_stage1) +
+  tm_lines(col = TEL_BROWN, lwd = 4, alpha = 0.95) +
+  # TE1 and TE3 (Woodlands North / Woodlands South): circle dots
+  tm_shape(tel_stage1_sf %>% filter(station != "Woodlands")) +
+  tm_dots(col = TEL_BROWN, size = 0.55, shape = 21,
+          border.col = "white", border.lwd = 2) +
+  tm_text("station", col = TEL_BROWN, size = 0.60, fontface = "bold",
+          xmod = 1.05, ymod = 0.10,
+          bg.color = "white", bg.alpha = 0.75) +
+  # TE2 / Woodlands interchange: square to signal interchange; label to the right
+  tm_shape(nsl_stations_sf %>% filter(station == "Woodlands")) +
+  tm_dots(col = TEL_BROWN, size = 0.60, shape = 22,
+          border.col = "white", border.lwd = 2) +
+  tm_text("station", col = TEL_BROWN, size = 0.60, fontface = "bold",
+          xmod = 1.05, ymod = 0.10,
+          bg.color = "white", bg.alpha = 0.75) +
+  # Stage annotations — italic labels with white backing beside each stage
+  tm_shape(tel_annotations) +
+  tm_text("label", col = TEL_BROWN, size = 0.46, fontface = "italic",
+          bg.color = "white", bg.alpha = 0.65) +
+  # ---- Other MRT/LRT stations in the area --------------------------------- #
+  tm_shape(mrt_north %>%
+             filter(!station %in% nsl_all_names,
+                    !station %in% tel_stage1_names)) +
+  tm_dots(col = "grey55", size = 0.2, shape = 21,
+          border.col = "white", border.lwd = 0.8, alpha = 0.7) +
+  tm_layout(
+    title          = "HDB price per sqm (northern towns)",
+    title.size     = 0.85,
+    title.fontface = "bold",
+    title.color    = pal["nus_blue"],
+    legend.outside = TRUE
+  )
+```
+
+
+
+
+
+
+```{r map-interactive}
+tmap_mode("view")
+
+tm_shape(northern_areas) +
+  tm_borders(col = "grey35", lwd = 1.8) +
+  tm_shape(hdb_north_map) +
+  tm_dots(
+    col    = "price_psm",
+    palette = c("#D6E8F7", "#2E75B6", pal["nus_blue"]),
+    style  = "quantile",
+    size   = 0.05,
+    alpha  = 0.7,
+    title  = "Price per sqm ($)",
+    popup.vars = c(
+      "Town"              = "town",
+      "Flat type"         = "flat_type",
+      "Price/sqm ($)"    = "price_psm",
+      "Dist. to MRT (m)"  = "dist_to_mrt_m",
+      "Nearest station"   = "nearest_station"
+    )
+  ) +
+  # NSL dashed stubs
+  tm_shape(nsl_ext_south) +
+  tm_lines(col = NSL_RED, lwd = 2, lty = "dashed", alpha = 0.5) +
+  tm_shape(nsl_ext_north) +
+  tm_lines(col = NSL_RED, lwd = 2, lty = "dashed", alpha = 0.5) +
+  # NSL solid line
+  tm_shape(nsl_line_solid) +
+  tm_lines(col = NSL_RED, lwd = 3, alpha = 0.8) +
+  # NSL stations outside the study area
+  tm_shape(nsl_stations_sf %>% filter(!in_scope)) +
+  tm_dots(col = "white", size = 0.1, shape = 21,
+          border.col = NSL_RED, border.lwd = 1.5,
+          popup.vars = c("NSL station (outside study area)" = "station")) +
+  # NSL in-scope stations (excl. Woodlands interchange)
+  tm_shape(nsl_stations_sf %>% filter(in_scope, station != "Woodlands")) +
+  tm_dots(col = NSL_RED, size = 0.15,
+          popup.vars = c("NSL station" = "station")) +
+  # TEL Stage 2 dashed
+  tm_shape(tel_line_stage2) +
+  tm_lines(col = TEL_BROWN, lwd = 2, lty = "dashed", alpha = 0.6) +
+  # TEL Stage 1 solid
+  tm_shape(tel_line_stage1) +
+  tm_lines(col = TEL_BROWN, lwd = 3.5, alpha = 0.95) +
+  tm_shape(tel_stage1_sf %>% filter(station != "Woodlands")) +
+  tm_dots(col = TEL_BROWN, size = 0.18,
+          popup.vars = c("TEL Stage 1 station" = "station")) +
+  # Woodlands interchange
+  tm_shape(nsl_stations_sf %>% filter(station == "Woodlands")) +
+  tm_dots(col = TEL_BROWN, size = 0.22, shape = 22,
+          popup.vars = c("Interchange (NSL/TEL)" = "station")) +
+  # Other stations
+  tm_shape(mrt_north %>%
+             filter(!station %in% nsl_all_names,
+                    !station %in% tel_stage1_names)) +
+  tm_dots(col = "grey55", size = 0.07,
+          popup.vars = c("Station" = "station"))
+```
+
+```{r reset-tmap}
+tmap_mode("plot")
+```
+
+
+
+
+```{r parallel-trends}
+did_trend <- hdb %>%
+  filter(town %in% c("WOODLANDS", "SEMBAWANG", "YISHUN"),
+         year >= 2017) %>%
+  mutate(group = if_else(town == "WOODLANDS",
+                         "Woodlands (T)", "Sembawang + Yishun (C)")) %>%
+  group_by(group, year) %>%
+  summarise(mean_psm = mean(price_psm), .groups = "drop")
+```
+
+
+
+
+
+
+```{r parallel-trends2}
+ggplot(did_trend, aes(x = year, y = mean_psm,
+                      colour = group, group = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 2020, linetype = "dashed",
+             colour = "grey40", linewidth = 0.8) +
+  annotate("label", x = 2020.1,
+           y = min(did_trend$mean_psm) * 1.01,
+           label = "TEL Stage 1\n31 Jan 2020",
+           hjust = 0, size = 3.2, colour = "grey30",
+           fill = "white", label.size = 0.3) +
+  scale_colour_manual(
+    values = c("Woodlands (T)"         = pal[["nus_orange"]],
+               "Sembawang + Yishun (C)" = pal[["nus_blue"]])
+  ) +
+  scale_x_continuous(breaks = 2017:2025) +
+  scale_y_continuous(labels = dollar_format(prefix = "$", big.mark = ","), limits=c(0, NA)) +
+  labs(
+    title    = "Comparison between the towns",
+    x        = NULL,
+    y        = "Mean price per sqm ($)",
+    colour   = NULL,
+    caption  = "Data: HDB."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom"
+  )
+```
+
+
+
+
+
+
+
+```{r did-prep}
+did_data <- hdb %>%
+  filter(
+    town %in% c("WOODLANDS", "SEMBAWANG", "YISHUN"),
+    year %in% 2018:2021
+  ) %>%
+  mutate(
+    treated = (town == "WOODLANDS"),
+    post    = (year >= 2020)
+  )
+
+did_data %>%
+  count(town, post) %>%
+  pivot_wider(names_from = post, values_from = n,
+              names_prefix = "post_") %>%
+  rename(before = post_FALSE, after = post_TRUE)
+
+glimpse(did_data)
+```
+
+
+
+
+
+
+
+```{r did-table}
+did_means <- did_data %>%
+  group_by(treated, post) %>%
+  summarise(mean_psm = mean(price_psm), n = n(), .groups = "drop") %>%
+  mutate(
+    group  = if_else(treated, "Woodlands (treated)",
+                     "Sembawang + Yishun (control)"),
+    period = if_else(post, "After (2020–21)", "Before (2018–19)")
+  )
+
+did_means %>%
+  select(group, period, mean_psm, n) %>%
+  mutate(mean_psm = dollar(round(mean_psm), prefix = "$")) %>%
+  arrange(group, period)
+```
+
+
+
+
+
+
+```{r did-manual}
+wide <- did_means %>%
+  pivot_wider(names_from = period, values_from = mean_psm, id_cols = group)
+
+woodlands_diff <- wide$`After (2020–21)`[wide$group == "Woodlands (treated)"] -
+                  wide$`Before (2018–19)`[wide$group == "Woodlands (treated)"]
+
+control_diff   <- wide$`After (2020–21)`[wide$group == "Sembawang + Yishun (control)"] -
+                  wide$`Before (2018–19)`[wide$group == "Sembawang + Yishun (control)"]
+
+did_estimate   <- woodlands_diff - control_diff
+
+cat("Woodlands change (before -> after):      $", round(woodlands_diff), "/sqm\n")
+cat("Control towns change (before -> after):  $", round(control_diff),  "/sqm\n")
+cat("DiD estimate:                            $", round(did_estimate),  "/sqm\n")
+```
+
+
+
+
+
+```{r did-regression}
+did_model <- lm(price_psm ~ treated + post + treated:post, data = did_data)
+summary(did_model)
+```
+
+
+
+
